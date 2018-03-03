@@ -9,6 +9,9 @@ import os
 from keras import layers, models, optimizers
 from keras import regularizers
 from keras import backend as K
+from keras.models import load_model
+from keras import models
+
 from quad_controller_rl import util
 
 
@@ -21,6 +24,25 @@ class DRLA(BaseAgent):
         self.state_range = self.task.observation_space.high - self.task.observation_space.low
         self.action_size = np.prod(self.task.action_space.shape)
 
+
+        # Load and Save
+        self.load_saved = True
+        self.save_every = 10
+        self.model_name = 'my_model'
+        self.model_ext = '.h5'
+
+        if self.load_saved or self.save_every:
+            self.model_dir = util.get_param('out')
+            self.model_task = util.get_param('task')
+            self.actor_file_name = os.path.join(self.model_dir,'{}_{}_actor{}'.format(self.model_name,
+                                                                                      self.model_task,
+                                                                                      self.model_ext))
+            self.critic_file_name = os.path.join(self.model_dir,'{}_{}_critic{}'.format(self.model_name,
+                                                                                        self.model_task,
+                                                                                        self.model_ext))
+            print("Actor filename:", self.actor_file_name)
+            print("Critic filename:", self.critic_file_name)
+
         # Actor (Policy) Model
         self.action_low = self.task.action_space.low
         self.action_high = self.task.action_space.high
@@ -31,6 +53,9 @@ class DRLA(BaseAgent):
         self.critic_local = Critic(self.state_size, self.action_size)
         self.critic_target = Critic(self.state_size, self.action_size)
 
+        self.load_weights()
+
+
         # Initialize target model parameters with local model parameters
         self.critic_target.model.set_weights(self.critic_local.model.get_weights())
         self.actor_target.model.set_weights(self.actor_local.model.get_weights())
@@ -39,13 +64,14 @@ class DRLA(BaseAgent):
         self.noise = OUNoise(self.action_size)
 
         # Replay memory
-        self.buffer_size = 5000
+        self.buffer_size = 50000
         self.batch_size = 64
         self.memory = ReplayBuffer(self.buffer_size)
 
         # Algorithm parameters
         self.gamma = 0.99  # discount factor
-        self.tau = 0.001  # for soft update of target parameters
+        self.tau = 0.1  # for soft update of target parameters
+        self.alpha = 0.005 # decay rate for exploration
 
         self.last_state = None
         self.last_action = None
@@ -60,6 +86,22 @@ class DRLA(BaseAgent):
             "stats_{}.csv".format(util.get_timestamp()))  # path to CSV file
         self.stats_columns = ['episode', 'total_reward', 'steps']  # specify columns to save
         print("Saving stats {} to {}".format(self.stats_columns, self.stats_filename))  # [debug]
+
+    def save_weights(self):
+        if self.save_every and self.episode_num % self.save_every == 0:
+            self.actor_local.model.save_weights(self.actor_file_name)
+            self.critic_local.model.save_weights(self.critic_file_name)
+            print("Model saved after episode ", self.episode_num)
+
+    def load_weights(self):
+        if self.load_saved and os.path.isfile(self.actor_file_name):
+            try:
+                self.actor_local.model.load_weights(self.actor_file_name)
+                self.critic_local.model.load_weights(self.critic_file_name)
+                print("Model weights loaded from files.")
+            except Exception as e:
+                print("No usable weights found")
+                print("{}: {}".format(e.__class__.__name__, str(e)))
 
     def step(self, state, reward, done):
         # Transform state vector
@@ -88,14 +130,13 @@ class DRLA(BaseAgent):
                 self.count, self.total_reward/max(1, self.count), self.best_reward))  # [debug]
 
             # Write episode stats
-            # self.write_stats([self.episode_num, self.total_reward, self.count])
+            self.write_stats([self.episode_num, self.total_reward, self.count])
+
+            # Save model weights
+            self.save_weights()
 
             # Reset episode variables
             self.reset_episode_vars()
-
-            # Recenter walking noise every 10 episodes
-            if self.episode_num % 10 == 0:
-                self.noise.reset()
 
         self.last_state = state
         self.last_action = action
@@ -106,7 +147,7 @@ class DRLA(BaseAgent):
         """Returns actions for given state(s) as per current policy."""
         states = np.reshape(states, [-1, self.state_size])
         actions = self.actor_local.model.predict(states)
-        return actions + self.noise.sample()  # add some noise for exploration
+        return actions + self.noise.sample()*np.exp(-self.alpha*self.episode_num)  # add some noise for exploration
 
     def learn(self, experiences):
         """Update policy and value parameters using given batch of experience tuples."""
@@ -148,7 +189,6 @@ class DRLA(BaseAgent):
         self.total_reward = 0.0
         self.count = 0
         self.episode_num += 1
-        self.noise.reset()
 
     def write_stats(self, stats):
         """Write single episode stats to CSV file."""
@@ -176,7 +216,7 @@ class Actor:
         self.action_high = action_high
         self.action_range = self.action_high - self.action_low
 
-        self.learning_rate = 0.0001
+        self.learning_rate = 0.00005
 
         self.build_model()
 
@@ -189,16 +229,16 @@ class Actor:
         alpha = 0.3
 
         # Add hidden layers
-        net = layers.Dense(units=64, activation=None, use_bias=False)(states)
-        net = layers.BatchNormalization()(net)
+        net = layers.Dense(units=256, activation=None, use_bias=False)(states)
+        # net = layers.BatchNormalization()(net)
         net = layers.LeakyReLU(alpha=alpha)(net)
 
-        net = layers.Dense(units=32, activation=None, use_bias=False)(net)
-        net = layers.BatchNormalization()(net)
+        net = layers.Dense(units=256, activation=None, use_bias=False)(net)
+        # net = layers.BatchNormalization()(net)
         net = layers.LeakyReLU(alpha=alpha)(net)
 
-        net = layers.Dense(units=16, activation=None, use_bias=False)(net)
-        net = layers.BatchNormalization()(net)
+        net = layers.Dense(units=256, activation=None, use_bias=False)(net)
+        # net = layers.BatchNormalization()(net)
         net = layers.LeakyReLU(alpha=alpha)(net)
 
         # net = layers.Dense(units=64, activation=None, use_bias=False,
@@ -248,7 +288,7 @@ class Critic:
         self.state_size = state_size
         self.action_size = action_size
 
-        self.learning_rate = 0.0001
+        self.learning_rate = 0.00005
 
         self.build_model()
 
@@ -262,26 +302,26 @@ class Critic:
         alpha = 0.3
 
         # Add hidden layer(s) for state pathway
-        net_states = layers.Dense(units=64, activation=None, use_bias=False)(states)
-        net_states = layers.BatchNormalization()(net_states)
-        net_states = layers.LeakyReLU(alpha=alpha)(net_states)
-        net_states = layers.Dense(units=32, activation=None, use_bias=False)(net_states)
+        net_states = layers.Dense(units=256, activation=None, use_bias=False)(states)
         # net_states = layers.BatchNormalization()(net_states)
-        # net_states = layers.LeakyReLU(alpha=alpha)(net_states)
+        net_states = layers.LeakyReLU(alpha=alpha)(net_states)
+        net_states = layers.Dense(units=256, activation=None, use_bias=False)(net_states)
+        # net_states = layers.BatchNormalization()(net_states)
+        net_states = layers.LeakyReLU(alpha=alpha)(net_states)
 
         # Add hidden layer(s) for action pathway
-        net_actions = layers.Dense(units=64, activation=None, use_bias=False)(actions)
-        net_actions = layers.BatchNormalization()(net_actions)
-        net_actions = layers.LeakyReLU(alpha=alpha)(net_actions)
-        net_actions = layers.Dense(units=32, activation=None, use_bias=False)(net_actions)
+        net_actions = layers.Dense(units=256, activation=None, use_bias=False)(actions)
         # net_actions = layers.BatchNormalization()(net_actions)
-        # net_actions = layers.LeakyReLU(alpha=alpha)(net_actions)
+        net_actions = layers.LeakyReLU(alpha=alpha)(net_actions)
+        net_actions = layers.Dense(units=256, activation=None, use_bias=False)(net_actions)
+        # net_actions = layers.BatchNormalization()(net_actions)
+        net_actions = layers.LeakyReLU(alpha=alpha)(net_actions)
 
         # Try different layer sizes, activations, add batch normalization, regularizers, etc.
 
         # Combine state and action pathways
         net = layers.Add()([net_states, net_actions])
-        net = layers.BatchNormalization()(net)
+        # net = layers.BatchNormalization()(net)
         net = layers.LeakyReLU(alpha=alpha)(net)
 
         # Add more layers to the combined network if needed

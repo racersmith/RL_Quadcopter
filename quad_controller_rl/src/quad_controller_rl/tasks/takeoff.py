@@ -15,13 +15,15 @@ class Takeoff(BaseTask):
         self.lin_acel = 1.5*400.0
         self.observation_space = spaces.Box(
             np.array([- cube_size / 2, - cube_size / 2, 0.0,
-                      -1.0, -1.0, -1.0, -1.0,
-                      -self.ang_vel, -self.ang_vel, -self.ang_vel,
-                      -self.lin_acel, -self.lin_acel, -self.lin_acel], dtype=np.float32),
+                      -1.0, -1.0, -1.0, -1.0
+                      # -self.ang_vel, -self.ang_vel, -self.ang_vel,
+                      # -self.lin_acel, -self.lin_acel, -self.lin_acel
+                      ], dtype=np.float32),
             np.array([cube_size / 2, cube_size / 2, cube_size,
-                      1.0, 1.0, 1.0, 1.0,
-                      self.ang_vel, self.ang_vel, self.ang_vel,
-                      self.lin_acel, self.lin_acel, self.lin_acel], dtype=np.float32)
+                      1.0, 1.0, 1.0, 1.0
+                      # self.ang_vel, self.ang_vel, self.ang_vel,
+                      # self.lin_acel, self.lin_acel, self.lin_acel
+                      ], dtype=np.float32)
             , dtype=np.float32)
         #print("Takeoff(): observation_space = {}".format(self.observation_space))  # [debug]
 
@@ -39,7 +41,7 @@ class Takeoff(BaseTask):
         self.max_duration = 5.0  # secs
         self.target_z = 10.0  # target height (z position) to reach for successful takeoff
 
-        self.max_values = np.zeros(13)
+        self.max_values = np.zeros(7)
 
     def reset(self):
         # Nothing to reset; just return initial condition
@@ -52,12 +54,12 @@ class Takeoff(BaseTask):
             )
 
     def height_loss(self, pose):
-        return abs(self.target_z - pose.position.z)
+        return (self.target_z - pose.position.z) ** 2
 
     def trajectory_loss(self, pose):
         loss = pose.position.x ** 2
         loss += pose.position.y ** 2
-        return min(100, loss)
+        return loss
 
     def smooth_loss(self, angular_velocity, linear_acceleration):
         loss = (angular_velocity.x / self.ang_vel) ** 2
@@ -67,21 +69,21 @@ class Takeoff(BaseTask):
         loss += (linear_acceleration.x / self.lin_acel) ** 2
         loss += (linear_acceleration.y / self.lin_acel) ** 2
         loss += (linear_acceleration.z / self.lin_acel) ** 2
-        return min(100, loss)
+        return loss
 
     def base_reward(self, pose, angular_velocity, linear_acceleration):
         loss = self.height_loss(pose)
-        loss += 0.01 * self.smooth_loss(angular_velocity, linear_acceleration)
-        loss += 0.01 * self.trajectory_loss(pose)
-
+        # loss += 0.001 * self.smooth_loss(angular_velocity, linear_acceleration)
+        # loss += 0.001 * self.trajectory_loss(pose)
         return -loss
 
     def update(self, timestamp, pose, angular_velocity, linear_acceleration):
         state = np.array([
             pose.position.x, pose.position.y, pose.position.z,
-            pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w,
-            angular_velocity.x, angular_velocity.y, angular_velocity.z,
-            linear_acceleration.x, linear_acceleration.y, linear_acceleration.z])
+            pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w
+            # angular_velocity.x, angular_velocity.y, angular_velocity.z,
+            # linear_acceleration.x, linear_acceleration.y, linear_acceleration.z
+        ])
 
         self.max_values = np.max([state, np.abs(self.max_values)], axis=0)
 
@@ -90,7 +92,7 @@ class Takeoff(BaseTask):
         reward = self.base_reward(pose, angular_velocity, linear_acceleration)
 
         if pose.position.z >= self.target_z:  # agent has crossed the target height
-            reward += 10.0  # bonus reward
+            reward += 100.0  # bonus reward
             done = True
         elif timestamp > self.max_duration:  # agent has run out of time
             reward -= 10.0  # extra penalty
